@@ -1,6 +1,7 @@
 package dbstats
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -248,6 +249,43 @@ func (h *fakeHook) Execed(d time.Duration, query string, err error) {
 	h.execedCount++
 }
 func (h *fakeHook) RowIterated(err error) {
+	h.rowIteratedCount++
+}
+
+func (h *fakeHook) ConnOpenedContext(ctx context.Context, err error) {
+	h.connOpenedCount++
+	if err != nil {
+		h.numErr++
+	}
+}
+func (h *fakeHook) ConnClosedContext(ctx context.Context, err error) {
+	h.connClosedCount++
+	if err != nil {
+		h.numErr++
+	}
+}
+func (h *fakeHook) StmtPreparedContext(ctx context.Context, query string, err error) {
+	h.stmtPreparedCount++
+}
+func (h *fakeHook) StmtClosedContext(ctx context.Context, err error) {
+	h.stmtClosedCount++
+}
+func (h *fakeHook) TxBeganContext(ctx context.Context, err error) {
+	h.txBeganCount++
+}
+func (h *fakeHook) TxCommittedContext(ctx context.Context, err error) {
+	h.txCommitedCount++
+}
+func (h *fakeHook) TxRolledbackContext(ctx context.Context, err error) {
+	h.txRolledbackCount++
+}
+func (h *fakeHook) QueriedContext(ctx context.Context, d time.Duration, query string, err error) {
+	h.queriedCount++
+}
+func (h *fakeHook) ExecedContext(ctx context.Context, d time.Duration, query string, err error) {
+	h.execedCount++
+}
+func (h *fakeHook) RowIteratedContext(ctx context.Context, err error) {
 	h.rowIteratedCount++
 }
 
