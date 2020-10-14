@@ -334,6 +334,15 @@ func (vc *statsColumnConverter) ColumnConverter(idx int) driver.ValueConverter {
 	return vc.wrapped.ColumnConverter(idx)
 }
 
+// we add this method for implementing NamedValueChecker interface
+// and this is for escaping arguments checker, see the relating PR for more information
+func (vc *statsColumnConverter) CheckNamedValue(nv *driver.NamedValue) (err error) {
+	// the index for ColumnConverter doesn't matter and it just returns an new converter
+	// see: https://github.com/go-sql-driver/mysql/blob/master/statement.go#L43
+	nv.Value, err = vc.ColumnConverter(nv.Ordinal).ConvertValue(nv.Value)
+	return
+}
+
 func (s *statsStmt) Close() error {
 	err := s.wrapped.Close()
 	s.d.StmtClosed(err)
