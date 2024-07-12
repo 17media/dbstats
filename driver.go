@@ -328,7 +328,7 @@ func (c *statsConnContext) Begin() (driver.Tx, error) {
 func (c *statsConnContext) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	connContext, isSupport := c.wrapped.(driver.ConnBeginTx)
 	if !isSupport {
-		return nil, fmt.Errorf("BeginTx is not support by driver")
+		return c.Begin()
 	}
 	tx, err := connContext.BeginTx(ctx, opts)
 	c.d.TxBegan(err)
@@ -469,7 +469,11 @@ func (s *statsStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (
 	start := time.Now()
 	stmtContext, isSupport := s.wrapped.(driver.StmtExecContext)
 	if !isSupport {
-		return nil, fmt.Errorf("driver is not support context")
+		values, err := namedValueToValue(args)
+		if err != nil {
+			return nil, err
+		}
+		return s.Exec(values)
 	}
 	r, err := stmtContext.ExecContext(ctx, args)
 	dur := time.Now().Sub(start)
@@ -481,7 +485,11 @@ func (s *statsStmt) QueryContext(ctx context.Context, args []driver.NamedValue) 
 	start := time.Now()
 	stmtContext, isSupport := s.wrapped.(driver.StmtQueryContext)
 	if !isSupport {
-		return nil, fmt.Errorf("driver is not support context")
+		values, err := namedValueToValue(args)
+		if err != nil {
+			return nil, err
+		}
+		return s.Query(values)
 	}
 	r, err := stmtContext.QueryContext(ctx, args)
 	dur := time.Now().Sub(start)
@@ -526,4 +534,17 @@ func (t *statsTx) Rollback() error {
 	err := t.wrapped.Rollback()
 	t.d.TxRolledback(err)
 	return err
+}
+
+// from mysql driver utils namedValueToValue
+func namedValueToValue(named []driver.NamedValue) ([]driver.Value, error) {
+	dargs := make([]driver.Value, len(named))
+	for n, param := range named {
+		if len(param.Name) > 0 {
+			// TODO: support the use of Named Parameters #561
+			return nil, fmt.Errorf("driver does not support the use of Named Parameters")
+		}
+		dargs[n] = param.Value
+	}
+	return dargs, nil
 }
