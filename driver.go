@@ -3,6 +3,7 @@ package dbstats
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"io"
 	"time"
 )
@@ -266,6 +267,7 @@ func (c *statsConn) Begin() (driver.Tx, error) {
 // there're no close and Begin for ConnPrepareContext
 type statsConnContext struct {
 	driver.ConnPrepareContext
+	driver.ConnBeginTx
 	d       *statsDriver
 	wrapped driver.Conn
 }
@@ -316,6 +318,19 @@ func (c *statsConnContext) Close() error {
 
 func (c *statsConnContext) Begin() (driver.Tx, error) {
 	tx, err := c.wrapped.Begin()
+	c.d.TxBegan(err)
+	if err == nil {
+		tx = &statsTx{d: c.d, wrapped: tx}
+	}
+	return tx, err
+}
+
+func (c *statsConnContext) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	connContext, isSupport := c.wrapped.(driver.ConnBeginTx)
+	if !isSupport {
+		return nil, fmt.Errorf("BeginTx is not support by driver")
+	}
+	tx, err := connContext.BeginTx(ctx, opts)
 	c.d.TxBegan(err)
 	if err == nil {
 		tx = &statsTx{d: c.d, wrapped: tx}
@@ -401,6 +416,14 @@ type statsStmt struct {
 	query   string
 }
 
+type statsStmtContext struct {
+	driver.StmtQueryContext
+	driver.StmtExecContext
+	d       *statsDriver
+	wrapped driver.Stmt
+	query   string
+}
+
 type statsColumnConverter struct {
 	*statsStmt
 	wrapped driver.ColumnConverter
@@ -438,6 +461,89 @@ func (s *statsStmt) Exec(args []driver.Value) (driver.Result, error) {
 }
 
 func (s *statsStmt) Query(args []driver.Value) (driver.Rows, error) {
+	start := time.Now()
+	r, err := s.wrapped.Query(args)
+	dur := time.Now().Sub(start)
+	s.d.Queried(dur, s.query, err)
+	if err == nil {
+		r = &statsRows{d: s.d, wrapped: r}
+	}
+	return r, err
+}
+
+func (s *statsStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	start := time.Now()
+	stmtContext, isSupport := s.wrapped.(driver.StmtExecContext)
+	if !isSupport {
+		return nil, fmt.Errorf("driver is not support context")
+	}
+	r, err := stmtContext.ExecContext(ctx, args)
+	dur := time.Now().Sub(start)
+	s.d.Execed(dur, s.query, err)
+	return r, err
+}
+
+func (s *statsStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	start := time.Now()
+	stmtContext, isSupport := s.wrapped.(driver.StmtQueryContext)
+	if !isSupport {
+		return nil, fmt.Errorf("driver is not support context")
+	}
+	r, err := stmtContext.QueryContext(ctx, args)
+	dur := time.Now().Sub(start)
+	s.d.Queried(dur, s.query, err)
+	if err == nil {
+		r = &statsRows{d: s.d, wrapped: r}
+	}
+	return r, err
+}
+
+func (s *statsStmtContext) Close() error {
+	err := s.wrapped.Close()
+	s.d.StmtClosed(err)
+	return err
+}
+
+func (s *statsStmtContext) NumInput() int {
+	return s.wrapped.NumInput()
+}
+
+func (s *statsStmtContext) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	start := time.Now()
+	stmtContext, isSupport := s.wrapped.(driver.StmtExecContext)
+	if !isSupport {
+		return nil, fmt.Errorf("driver is not support context")
+	}
+	r, err := stmtContext.ExecContext(ctx, args)
+	dur := time.Now().Sub(start)
+	s.d.Execed(dur, s.query, err)
+	return r, err
+}
+
+func (s *statsStmtContext) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	start := time.Now()
+	stmtContext, isSupport := s.wrapped.(driver.StmtQueryContext)
+	if !isSupport {
+		return nil, fmt.Errorf("driver is not support context")
+	}
+	r, err := stmtContext.QueryContext(ctx, args)
+	dur := time.Now().Sub(start)
+	s.d.Queried(dur, s.query, err)
+	if err == nil {
+		r = &statsRows{d: s.d, wrapped: r}
+	}
+	return r, err
+}
+
+func (s *statsStmtContext) Exec(args []driver.Value) (driver.Result, error) {
+	start := time.Now()
+	r, err := s.wrapped.Exec(args)
+	dur := time.Now().Sub(start)
+	s.d.Execed(dur, s.query, err)
+	return r, err
+}
+
+func (s *statsStmtContext) Query(args []driver.Value) (driver.Rows, error) {
 	start := time.Now()
 	r, err := s.wrapped.Query(args)
 	dur := time.Now().Sub(start)
