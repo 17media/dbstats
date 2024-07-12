@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-// OpenFunc is the func used on driver.Driver. This is used as some driver libraries
-// (lib/pq for example) do not expose their driver.Driver struct, but do expose an Open
-// function.
-type OpenFunc func(name string) (driver.Conn, error)
-
 // Hook is an interface through which database events can be received. A Hook may received
 // multiple events concurrently. Each function's last argument is of type error which will
 // contain an error encountered while trying to perform the action. The one exception is
@@ -42,6 +37,7 @@ type Hook interface {
 
 type Driver interface {
 	driver.Driver
+	driver.DriverContext
 
 	// AddHook will add a Hook to be called when various database events occurs. AddHook
 	// should be called before any database activity happens as there is no gaurantee that
@@ -49,17 +45,18 @@ type Driver interface {
 	AddHook(h Hook)
 }
 
-func New(open OpenFunc) Driver {
-	return &statsDriver{open: open}
+func New(wrapped driver.Driver) Driver {
+	return &statsDriver{wrapped: wrapped}
 }
 
 type statsDriver struct {
-	open  OpenFunc
+	wrapped driver.Driver
+
 	hooks []Hook
 }
 
 func (s *statsDriver) Open(name string) (driver.Conn, error) {
-	c, err := s.open(name)
+	c, err := s.wrapped.Open(name)
 	s.ConnOpened(err)
 	if err != nil {
 		return c, err
@@ -81,26 +78,13 @@ func (s *statsDriver) Open(name string) (driver.Conn, error) {
 	return statc, nil
 }
 
-func (s *statsDriver) OpenContext(ctx context.Context, name string) (driver.Conn, error) {
-	c, err := s.open(name)
-	s.ConnOpenedContext(ctx, err)
+func (s *statsDriver) OpenConnector(name string) (driver.Connector, error) {
+	driverContext := s.wrapped.(driver.DriverContext)
+	c, err := driverContext.OpenConnector(name)
 	if err != nil {
 		return c, err
 	}
-	statc := &statsConn{d: s, wrapped: c}
-	q, isQ := c.(driver.Queryer)
-	e, isE := c.(driver.Execer)
-	if isE && isQ {
-		return &statsExecerQueryer{
-			statsConn:    statc,
-			statsQueryer: &statsQueryer{statsConn: statc, wrapped: q},
-			statsExecer:  &statsExecer{statsConn: statc, wrapped: e},
-		}, nil
-	} else if isQ {
-		return &statsQueryer{statsConn: statc, wrapped: q}, nil
-	} else if isE {
-		return &statsExecer{statsConn: statc, wrapped: e}, nil
-	}
+	statc := &statsConnector{d: s, wrapped: c}
 	return statc, nil
 }
 
@@ -208,6 +192,40 @@ func (s *statsDriver) RowIteratedContext(ctx context.Context, err error) {
 	}
 }
 
+type statsConnector struct {
+	d       *statsDriver     // the driver in which to store stats
+	wrapped driver.Connector // the wrapped connection
+}
+
+func (conn *statsConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	c, err := conn.wrapped.Connect(ctx)
+	conn.d.ConnOpenedContext(ctx, err)
+	if err != nil {
+		return c, err
+	}
+
+	statc := &statsConnContext{d: conn.d, wrapped: c}
+	q, isQ := c.(driver.QueryerContext)
+	e, isE := c.(driver.ExecerContext)
+	if isE && isQ {
+		return &statsExecerQueryerContext{
+			statsConnContext:    statc,
+			statsQueryerContext: &statsQueryerContext{statsConnContext: statc, wrapped: q},
+			statsExecerContext:  &statsExecerContext{statsConnContext: statc, wrapped: e},
+		}, nil
+	} else if isQ {
+		return &statsQueryerContext{statsConnContext: statc, wrapped: q}, nil
+	} else if isE {
+		return &statsExecerContext{statsConnContext: statc, wrapped: e}, nil
+	}
+	return statc, nil
+
+}
+
+func (c *statsConnector) Driver() driver.Driver {
+	return c.d
+}
+
 type statsConn struct {
 	d       *statsDriver // the driver in which to store stats
 	wrapped driver.Conn  // the wrapped connection
@@ -247,12 +265,17 @@ func (c *statsConn) Begin() (driver.Tx, error) {
 
 // there're no close and Begin for ConnPrepareContext
 type statsConnContext struct {
+	driver.ConnPrepareContext
 	d       *statsDriver
-	wrapped driver.ConnPrepareContext
+	wrapped driver.Conn
 }
 
 func (c *statsConnContext) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	s, err := c.wrapped.PrepareContext(ctx, query)
+	warp, useContext := c.wrapped.(driver.ConnPrepareContext)
+	if !useContext {
+		return c.Prepare(query)
+	}
+	s, err := warp.PrepareContext(ctx, query)
 	c.d.StmtPreparedContext(ctx, query, err)
 	if err == nil {
 		cc, isCc := s.(driver.ColumnConverter)
@@ -266,6 +289,38 @@ func (c *statsConnContext) PrepareContext(ctx context.Context, query string) (dr
 		}
 	}
 	return s, err
+}
+
+func (c *statsConnContext) Prepare(query string) (driver.Stmt, error) {
+	s, err := c.wrapped.Prepare(query)
+	c.d.StmtPrepared(query, err)
+	if err == nil {
+		cc, isCc := s.(driver.ColumnConverter)
+		if isCc {
+			s = &statsColumnConverter{
+				statsStmt: &statsStmt{d: c.d, wrapped: s, query: query},
+				wrapped:   cc,
+			}
+		} else {
+			s = &statsStmt{d: c.d, wrapped: s, query: query}
+		}
+	}
+	return s, err
+}
+
+func (c *statsConnContext) Close() error {
+	err := c.wrapped.Close()
+	c.d.ConnClosed(err)
+	return err
+}
+
+func (c *statsConnContext) Begin() (driver.Tx, error) {
+	tx, err := c.wrapped.Begin()
+	c.d.TxBegan(err)
+	if err == nil {
+		tx = &statsTx{d: c.d, wrapped: tx}
+	}
+	return tx, err
 }
 
 type statsQueryer struct {
@@ -285,11 +340,12 @@ func (q *statsQueryer) Query(query string, args []driver.Value) (driver.Rows, er
 }
 
 type statsQueryerContext struct {
+	driver.QueryerContext
 	*statsConnContext
 	wrapped driver.QueryerContext
 }
 
-func (q *statsQueryerContext) QueryerContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (q *statsQueryerContext) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	start := time.Now()
 	r, err := q.wrapped.QueryContext(ctx, query, args)
 	dur := time.Now().Sub(start)
@@ -313,10 +369,30 @@ func (e *statsExecer) Exec(query string, args []driver.Value) (driver.Result, er
 	return r, err
 }
 
+type statsExecerContext struct {
+	driver.ExecerContext
+	*statsConnContext
+	wrapped driver.ExecerContext
+}
+
+func (e *statsExecerContext) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	start := time.Now()
+	r, err := e.wrapped.ExecContext(ctx, query, args)
+	dur := time.Now().Sub(start)
+	e.statsConnContext.d.ExecedContext(ctx, dur, query, err)
+	return r, err
+}
+
 type statsExecerQueryer struct {
 	*statsConn
 	*statsQueryer
 	*statsExecer
+}
+
+type statsExecerQueryerContext struct {
+	*statsConnContext
+	*statsQueryerContext
+	*statsExecerContext
 }
 
 type statsStmt struct {
