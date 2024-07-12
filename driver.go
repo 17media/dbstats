@@ -411,12 +411,6 @@ type statsExecerQueryerContext struct {
 }
 
 type statsStmt struct {
-	d       *statsDriver
-	wrapped driver.Stmt
-	query   string
-}
-
-type statsStmtContext struct {
 	driver.StmtQueryContext
 	driver.StmtExecContext
 	d       *statsDriver
@@ -490,62 +484,6 @@ func (s *statsStmt) QueryContext(ctx context.Context, args []driver.NamedValue) 
 		return nil, fmt.Errorf("driver is not support context")
 	}
 	r, err := stmtContext.QueryContext(ctx, args)
-	dur := time.Now().Sub(start)
-	s.d.Queried(dur, s.query, err)
-	if err == nil {
-		r = &statsRows{d: s.d, wrapped: r}
-	}
-	return r, err
-}
-
-func (s *statsStmtContext) Close() error {
-	err := s.wrapped.Close()
-	s.d.StmtClosed(err)
-	return err
-}
-
-func (s *statsStmtContext) NumInput() int {
-	return s.wrapped.NumInput()
-}
-
-func (s *statsStmtContext) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	start := time.Now()
-	stmtContext, isSupport := s.wrapped.(driver.StmtExecContext)
-	if !isSupport {
-		return nil, fmt.Errorf("driver is not support context")
-	}
-	r, err := stmtContext.ExecContext(ctx, args)
-	dur := time.Now().Sub(start)
-	s.d.Execed(dur, s.query, err)
-	return r, err
-}
-
-func (s *statsStmtContext) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	start := time.Now()
-	stmtContext, isSupport := s.wrapped.(driver.StmtQueryContext)
-	if !isSupport {
-		return nil, fmt.Errorf("driver is not support context")
-	}
-	r, err := stmtContext.QueryContext(ctx, args)
-	dur := time.Now().Sub(start)
-	s.d.Queried(dur, s.query, err)
-	if err == nil {
-		r = &statsRows{d: s.d, wrapped: r}
-	}
-	return r, err
-}
-
-func (s *statsStmtContext) Exec(args []driver.Value) (driver.Result, error) {
-	start := time.Now()
-	r, err := s.wrapped.Exec(args)
-	dur := time.Now().Sub(start)
-	s.d.Execed(dur, s.query, err)
-	return r, err
-}
-
-func (s *statsStmtContext) Query(args []driver.Value) (driver.Rows, error) {
-	start := time.Now()
-	r, err := s.wrapped.Query(args)
 	dur := time.Now().Sub(start)
 	s.d.Queried(dur, s.query, err)
 	if err == nil {
