@@ -3,6 +3,7 @@ package dbstats
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"io"
 	"time"
 )
@@ -266,6 +267,7 @@ func (c *statsConn) Begin() (driver.Tx, error) {
 // there're no close and Begin for ConnPrepareContext
 type statsConnContext struct {
 	driver.ConnPrepareContext
+	driver.ConnBeginTx
 	d       *statsDriver
 	wrapped driver.Conn
 }
@@ -316,6 +318,19 @@ func (c *statsConnContext) Close() error {
 
 func (c *statsConnContext) Begin() (driver.Tx, error) {
 	tx, err := c.wrapped.Begin()
+	c.d.TxBegan(err)
+	if err == nil {
+		tx = &statsTx{d: c.d, wrapped: tx}
+	}
+	return tx, err
+}
+
+func (c *statsConnContext) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	connContext, isSupport := c.wrapped.(driver.ConnBeginTx)
+	if !isSupport {
+		return c.Begin()
+	}
+	tx, err := connContext.BeginTx(ctx, opts)
 	c.d.TxBegan(err)
 	if err == nil {
 		tx = &statsTx{d: c.d, wrapped: tx}
@@ -396,6 +411,8 @@ type statsExecerQueryerContext struct {
 }
 
 type statsStmt struct {
+	driver.StmtQueryContext
+	driver.StmtExecContext
 	d       *statsDriver
 	wrapped driver.Stmt
 	query   string
@@ -448,6 +465,41 @@ func (s *statsStmt) Query(args []driver.Value) (driver.Rows, error) {
 	return r, err
 }
 
+func (s *statsStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	start := time.Now()
+	stmtContext, isSupport := s.wrapped.(driver.StmtExecContext)
+	if !isSupport {
+		values, err := namedValueToValue(args)
+		if err != nil {
+			return nil, err
+		}
+		return s.Exec(values)
+	}
+	r, err := stmtContext.ExecContext(ctx, args)
+	dur := time.Now().Sub(start)
+	s.d.Execed(dur, s.query, err)
+	return r, err
+}
+
+func (s *statsStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	start := time.Now()
+	stmtContext, isSupport := s.wrapped.(driver.StmtQueryContext)
+	if !isSupport {
+		values, err := namedValueToValue(args)
+		if err != nil {
+			return nil, err
+		}
+		return s.Query(values)
+	}
+	r, err := stmtContext.QueryContext(ctx, args)
+	dur := time.Now().Sub(start)
+	s.d.Queried(dur, s.query, err)
+	if err == nil {
+		r = &statsRows{d: s.d, wrapped: r}
+	}
+	return r, err
+}
+
 type statsRows struct {
 	d       *statsDriver
 	wrapped driver.Rows
@@ -482,4 +534,17 @@ func (t *statsTx) Rollback() error {
 	err := t.wrapped.Rollback()
 	t.d.TxRolledback(err)
 	return err
+}
+
+// from mysql driver utils namedValueToValue
+func namedValueToValue(named []driver.NamedValue) ([]driver.Value, error) {
+	dargs := make([]driver.Value, len(named))
+	for n, param := range named {
+		if len(param.Name) > 0 {
+			// TODO: support the use of Named Parameters #561
+			return nil, fmt.Errorf("driver does not support the use of Named Parameters")
+		}
+		dargs[n] = param.Value
+	}
+	return dargs, nil
 }

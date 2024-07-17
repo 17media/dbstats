@@ -102,7 +102,7 @@ func (c *fakeConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	} else if c.d.isExecer {
 		return &fakeExecerContext{}, nil
 	}
-	return &fakeConn{}, nil
+	return &fakeConnContext{}, nil
 }
 
 func (c *fakeConnector) Driver() driver.Driver {
@@ -149,7 +149,9 @@ func (e *fakeExecerQueryer) Exec(query string, args []driver.Value) (driver.Resu
 	return &fakeResult{}, nil
 }
 
-type fakeConnContext struct{}
+type fakeConnContext struct {
+	driver.ConnBeginTx
+}
 
 func (c *fakeConnContext) Prepare(query string) (driver.Stmt, error) {
 	if useColumnConverter {
@@ -169,6 +171,10 @@ func (c *fakeConnContext) PrepareContext(ctx context.Context, query string) (dri
 		return &fakeColumnCoverter{}, nil
 	}
 	return &fakeStmt{}, nil
+}
+
+func (c *fakeConnContext) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return &fakeTx{}, nil
 }
 
 type fakeQueryerContext struct{ fakeConnContext }
@@ -217,6 +223,12 @@ func (s *fakeStmt) Exec(args []driver.Value) (driver.Result, error) {
 	return &fakeResult{}, nil
 }
 func (s *fakeStmt) Query(args []driver.Value) (driver.Rows, error) {
+	return &fakeRows{}, nil
+}
+func (s *fakeStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	return &fakeResult{}, nil
+}
+func (s *fakeStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	return &fakeRows{}, nil
 }
 
@@ -446,8 +458,14 @@ func TestDriverKeepsTxStats(t *testing.T) {
 	reset()
 	db, _ := sql.Open("fakeStats", "")
 	defer db.Close()
-	tx, _ := db.Begin()
-	tx2, _ := db.Begin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Errorf("db.Begin fail %s", err.Error())
+	}
+	tx2, err := db.Begin()
+	if err != nil {
+		t.Errorf("db.Begin fail %s", err.Error())
+	}
 
 	if hook.txBeganCount != 2 {
 		t.Errorf("Expected TxBegan to be called 2 times, got %d", hook.txBeganCount)
